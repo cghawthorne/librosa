@@ -229,7 +229,7 @@ def dtw(X=None, Y=None, C=None, on_demand=False, metric='euclidean', step_sizes_
 
     if on_demand:
         # calculate accumulated cost matrix
-        D_on_demand, D_steps_on_demand = calc_accu_cost_on_demand(X, Y, metric, band_rad,
+        D, D_steps = calc_accu_cost_on_demand(X, Y, metric, global_constraints, band_rad,
                                     step_sizes_sigma,
                                     weights_mul, weights_add,
                                     max_0, max_1)
@@ -257,19 +257,29 @@ def dtw(X=None, Y=None, C=None, on_demand=False, metric='euclidean', step_sizes_
                                     max_0, max_1)
 
         # delete infinity rows and columns
-        # TODO for on demand?
         D = D[max_0:, max_1:]
         D_steps = D_steps[max_0:, max_1:]
 
     if backtrack:
-        if subseq:
-            # search for global minimum in last row of D-matrix
-            wp_end_idx = np.argmin(D[-1, :]) + 1
-            wp = backtracking(D_steps[:, :wp_end_idx], step_sizes_sigma)
+        if on_demand:
+            if subseq:
+                # search for global minimum in last row of D-matrix
+                wp_end_idx = np.argmin(D[Xlen - 1].values()) + 1
+
+                for k in D_steps.keys():
+                  if k[1] >= wp_end_idx:
+                    del D_steps[k]
+                wp = backtracking_on_demand(D_steps, Xlen, Ylen, step_sizes_sigma)
+            else:
+                wp = backtracking_on_demand(D_steps, Xlen, Ylen, step_sizes_sigma)
         else:
-            # perform warping path backtracking
-            wp = backtracking(D_steps, step_sizes_sigma)
-            wp_on_demand = backtracking_on_demand(D_steps, Xlen, Ylen, step_sizes_sigma)
+            if subseq:
+                # search for global minimum in last row of D-matrix
+                wp_end_idx = np.argmin(D[-1, :]) + 1
+                wp = backtracking(D_steps[:, :wp_end_idx], step_sizes_sigma)
+            else:
+                # perform warping path backtracking
+                wp = backtracking(D_steps, step_sizes_sigma)
 
         wp = np.asarray(wp, dtype=int)
 
@@ -277,13 +287,12 @@ def dtw(X=None, Y=None, C=None, on_demand=False, metric='euclidean', step_sizes_
         if subseq and (X.shape[1] > Y.shape[1]):
             wp = np.fliplr(wp)
 
-        import pdb;pdb.set_trace()
         return D, wp
     else:
         return D
 
 #@jit
-def calc_accu_cost_on_demand(X, Y, metric, band_rad, step_sizes_sigma, weights_mul,
+def calc_accu_cost_on_demand(X, Y, metric, global_constraints, band_rad, step_sizes_sigma, weights_mul,
                              weights_add, max_0, max_1):
     '''Calculate the accumulated cost matrix D.
 
@@ -330,10 +339,10 @@ def calc_accu_cost_on_demand(X, Y, metric, band_rad, step_sizes_sigma, weights_m
     dtw
     '''
     C = {}
-    D = defaultdict(lambda: np.inf)
+    D = defaultdict(lambda: defaultdict(lambda: np.inf))
 
     C[(0,0)] = cdist(np.atleast_2d(X.T[0]), np.atleast_2d(Y.T[0]), metric=metric)[0,0]
-    D[max_0, max_1] = C[(0,0)]
+    D[max_0][max_1] = C[(0,0)]
 
     #if subseq:
     #    D[max_0, max_1:] = C[0, :]
@@ -343,8 +352,8 @@ def calc_accu_cost_on_demand(X, Y, metric, band_rad, step_sizes_sigma, weights_m
             # accumulate costs
             for cur_step_idx, cur_w_add, cur_w_mul in zip(range(step_sizes_sigma.shape[0]),
                                                           weights_add, weights_mul):
-                cur_D = D[(cur_n - step_sizes_sigma[cur_step_idx, 0],
-                           cur_m - step_sizes_sigma[cur_step_idx, 1])]
+                cur_D = D[cur_n - step_sizes_sigma[cur_step_idx, 0]][
+                          cur_m - step_sizes_sigma[cur_step_idx, 1]]
                 dist_loc = (cur_n - max_0, cur_m - max_1)
                 if dist_loc not in C:
                   C[dist_loc] = cdist(np.atleast_2d(X.T[dist_loc[0]]), np.atleast_2d(Y.T[dist_loc[0]]), metric=metric)[0,0]
@@ -353,8 +362,8 @@ def calc_accu_cost_on_demand(X, Y, metric, band_rad, step_sizes_sigma, weights_m
                 cur_cost = cur_D + cur_C
 
                 # check if cur_cost is smaller than the one stored in D
-                if cur_cost < D[(cur_n, cur_m)]:
-                    D[(cur_n, cur_m)] = cur_cost
+                if cur_cost < D[cur_n][cur_m]:
+                    D[cur_n][cur_m] = cur_cost
 
                     # save step-index
                     D_steps[(cur_n, cur_m)] = cur_step_idx
@@ -430,8 +439,8 @@ def calc_accu_cost(C, D, D_steps, step_sizes_sigma,
     return D, D_steps
 
 
-@jit
-def backtracking_on_demand(D_steps, N, M, step_sizes_sigma):
+#@jit
+def backtracking_on_demand(D_steps, Xlen, Ylen, step_sizes_sigma):
     '''Backtrack optimal warping path.
 
     Uses the saved step sizes from the cost accumulation
@@ -460,7 +469,7 @@ def backtracking_on_demand(D_steps, N, M, step_sizes_sigma):
     '''
     wp = []
     # Set starting point D(N,M) and append it to the path
-    cur_idx = (D_steps.shape[0] - 1, D_steps.shape[1] - 1)
+    cur_idx = (Xlen - 1, Ylen - 1)
     wp.append((cur_idx[0], cur_idx[1]))
 
     # Loop backwards.
